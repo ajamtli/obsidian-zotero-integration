@@ -506,8 +506,32 @@ export async function exportToMarkdown(
     const attachments = itemData[i].attachments as any[];
     const hasPDF = attachments.some((a) => a.path?.endsWith('.pdf'));
 
-    // Handle the case of an item with no PDF attachments
-    if (!hasPDF) {
+    let mappedAttachments: Record<string, any> = {};
+    let hasAnnotations = false;
+
+    try {
+      const fullAttachmentData = await getAttachmentsFromCiteKey(
+        getCiteKeyFromAny(itemData[i]),
+        database
+      );
+
+      mappedAttachments = ((fullAttachmentData || []) as any[]).reduce<
+        Record<string, any>
+      >((col, a) => {
+        if (a?.path) {
+          col[a.path] = a;
+        }
+        if (a?.annotations?.length) {
+            hasAnnotations = true;
+        }
+        return col;
+      }, {});
+    } catch {
+      //
+    }
+
+    // Handle the case of an item with no PDF attachments or attachments with annotations
+    if (!hasPDF && !hasAnnotations) {
       const templateData = await applyBasicTemplates(sourcePath, {
         ...itemData[i],
         annotations: [],
@@ -554,30 +578,11 @@ export async function exportToMarkdown(
       continue;
     }
 
-    let mappedAttachments: Record<string, any> = {};
-
-    try {
-      const fullAttachmentData = await getAttachmentsFromCiteKey(
-        getCiteKeyFromAny(itemData[i]),
-        database
-      );
-
-      mappedAttachments = ((fullAttachmentData || []) as any[]).reduce<
-        Record<string, any>
-      >((col, a) => {
-        if (a?.path) {
-          col[a.path] = a;
-        }
-        return col;
-      }, {});
-    } catch {
-      //
-    }
-
-    // Handle the case of an item WITH PDF attachments
+    // Handle the case of an item WITH PDF attachments or attachments with annotations
     for (let j = 0, jLen = attachments.length; j < jLen; j++) {
       const pdfInputPath = attachments[j].path;
-      if (!pdfInputPath?.endsWith('.pdf')) continue;
+
+      if (!pdfInputPath?.endsWith('.pdf') && !hasAnnotations) continue;
 
       const pathTemplateData = await applyBasicTemplates(sourcePath, {
         ...attachments[j],
@@ -646,8 +651,9 @@ export async function exportToMarkdown(
 
       mappedAttachments[attachments[j].path]?.annotations?.forEach(
         (annot: any) => {
-          if (!annot.annotationPosition.rects?.length) return;
-
+          if (!annot.annotationPosition.rects?.length) {
+              annot.annotationPosition.rects = [[0, 0], [0, 0]];
+          }
           annots.push(
             convertNativeAnnotation(
               annot,
@@ -836,14 +842,14 @@ export async function dataExplorerPrompt(settings: ZoteroConnectorSettings) {
     }
 
     for (let j = 0, jLen = attachments.length; j < jLen; j++) {
-      const pdfInputPath = attachments[j].path;
-      if (!pdfInputPath?.endsWith('.pdf')) continue;
 
       let annots: any[] = [];
 
       mappedAttachments[attachments[j].path]?.annotations?.forEach(
         (annot: any) => {
-          if (!annot.annotationPosition.rects?.length) return;
+            if (!annot.annotationPosition.rects?.length) {
+                annot.annotationPosition.rects = [[0, 0], [0, 0]];
+            }
 
           annots.push(
             convertNativeAnnotation(
@@ -856,11 +862,9 @@ export async function dataExplorerPrompt(settings: ZoteroConnectorSettings) {
         }
       );
 
-      if (settings.shouldConcat && annots.length) {
-        annots = concatAnnotations(annots);
-      }
+      const pdfInputPath = attachments[j].path?.endsWith('.pdf');
 
-      if (canExtract) {
+      if (pdfInputPath && canExtract) {
         try {
           const res = await extractAnnotations(pdfInputPath, {
             noWrite: true,
@@ -899,11 +903,11 @@ export async function dataExplorerPrompt(settings: ZoteroConnectorSettings) {
 
   await Promise.all(
     itemData.map(async (data: any) => {
-      const firstPDF = data.attachments.find((a: any) =>
-        a.path?.endsWith('.pdf')
+      const attachmentWithAnnotationsOrPDF = data.attachments.find((a: any) =>
+        a.path?.endsWith('.pdf') || a.annotations?.length
       );
 
-      data.annotations = firstPDF?.annotations ? firstPDF.annotations : [];
+      data.annotations = attachmentWithAnnotationsOrPDF?.annotations ? attachmentWithAnnotationsOrPDF.annotations : [];
       data.lastImportDate = moment(0);
       data.isFirstImport = true;
       data.lastExportDate = moment(0);
